@@ -36,10 +36,8 @@ It implements the Decred-style stratum dialect used by BLAKE3-era miners
 go build -o monetarium-stratum .
 ```
 
-The module uses `replace` directives to build against the local
-`../monetarium-node` checkout, which is the authoritative source for the
-`rpcclient`, `wire` and `blockchain/standalone` packages. Adjust the paths in
-`go.mod` if your checkout lives elsewhere.
+The module builds against the published `monetarium-node` releases on the Go
+module proxy (see `go.mod`), so no local checkout is required.
 
 ## Configure
 
