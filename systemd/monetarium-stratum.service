@@ -1,0 +1,16 @@
+[Unit]
+Description=Monetarium stratum mining pool server
+Requires=monetarium-node.service
+After=monetarium-node.service
+
+[Service]
+ExecStart=/usr/local/bin/monetarium-stratum \
+	--configfile=/etc/monetarium-stratum/monetarium-stratum.conf
+Restart=on-failure
+RestartSec=5
+User=monetarium
+Group=monetarium
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
