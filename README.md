@@ -77,6 +77,52 @@ Example for `gominer`:
 gominer -P stratum+tcp://127.0.0.1:5550 --user worker1 --password x
 ```
 
+## Test with the simulated ASIC (CPU miner)
+
+`cmd/cpuminer` is a CPU stratum miner that stands in for an ASIC device.  It
+connects over plain stratum, reconstructs the block header from each
+`mining.notify` (the same layout gominer uses), searches the nonce space with
+real blake3 hashing, and submits shares/blocks back to the pool.  Use it to
+exercise the full path `node -> pool -> miner -> pool -> node` without any
+ASIC hardware.
+
+```sh
+# from the repo root
+go build -o monetarium-stratum .
+go build -o cpuminer ./cmd/cpuminer
+
+./monetarium-stratum --sharedifficulty=1 --rpcuser=user --rpcpass=pass
+./cpuminer --pool 127.0.0.1:5550 --user worker1 --password x \
+  --net mainnet --threads 4
+```
+
+The miner reports hashrate, accepted/rejected shares and found blocks every few
+seconds.
+
+Flags: `--pool` (default `127.0.0.1:5550`), `--user`, `--password`,
+`--net` (`mainnet`, `testnet3`, `simnet`, `regnet`; default `mainnet`),
+`--threads` (parallel hashing, default 1), `--debug`.
+
+### Share difficulty on a young network
+
+The pool's share target is `PowLimit / sharedifficulty`.  On a network whose
+block difficulty is still near `PowLimit` (a young chain where CPU miners can
+solve blocks), keep `--sharedifficulty=1` so the share target equals the block
+target; the default of 100 would otherwise demand 100x more work for a share
+than for a block.  At `--sharedifficulty=1` every accepted share is a block
+solution the pool submits to the node.
+
+### Node preconditions
+
+The node serving the pool must have `generate` disabled (getwork refuses to
+serve work while the node mines itself), be synced to the current tip and have
+at least one peer.  Check with `monetarium-ctl`:
+
+```sh
+monetarium-ctl --configfile=~/.monetarium/monetarium.conf getgenerate
+monetarium-ctl --configfile=~/.monetarium/monetarium.conf getblockchaininfo
+```
+
 ## Self-limiting block submission
 
 If your ASIC or GPU farm finds blocks faster than the rest of the network

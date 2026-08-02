@@ -12,6 +12,7 @@ require (
 	github.com/monetarium/monetarium-node/chaincfg/chainhash v1.3.9
 	github.com/monetarium/monetarium-node/rpcclient v1.3.9
 	github.com/monetarium/monetarium-node/wire v1.3.9
+	lukechampine.com/blake3 v1.3.0
 )
 
 require (
@@ -39,7 +40,6 @@ require (
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
-	lukechampine.com/blake3 v1.3.0 // indirect
 )
 
 replace github.com/monetarium/monetarium-node/addrmgr => ../monetarium-node/addrmgr
