@@ -141,6 +141,22 @@ func (m *Miner) connectAndMine() error {
 	m.connMu.Unlock()
 	m.log.Infof("connected to %s", m.cfg.Pool)
 
+	// connCtx is cancelled when the miner shuts down or the connection is
+	// torn down.  Closing the socket on cancellation unblocks any in-flight
+	// read (handshake or read loop) so the connection can unwind instead of
+	// hanging on a live connection.
+	connCtx, connCancel := context.WithCancel(m.ctx)
+	defer connCancel()
+	closeConn := make(chan struct{})
+	defer close(closeConn)
+	go func() {
+		select {
+		case <-connCtx.Done():
+			conn.Close()
+		case <-closeConn:
+		}
+	}()
+
 	// Reset per-connection state.
 	m.pendingMu.Lock()
 	m.pending = make(map[uint64]struct{})
@@ -158,9 +174,6 @@ func (m *Miner) connectAndMine() error {
 		return err
 	}
 	m.log.Infof("authorized as %q", m.cfg.User)
-
-	connCtx, connCancel := context.WithCancel(m.ctx)
-	defer connCancel()
 
 	var wg sync.WaitGroup
 	readDone := make(chan struct{})
