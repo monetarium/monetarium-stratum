@@ -2,4 +2,6 @@
 /monetarium-stratum.exe
 /cpuminer
 /cpuminer.exe
+/cmd/gpuminer/host
+/cmd/gpuminer/gpuminer
 *.log
