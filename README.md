@@ -39,6 +39,13 @@ go build -o monetarium-stratum .
 The module builds against the published `monetarium-node` releases on the Go
 module proxy (see `go.mod`), so no local checkout is required.
 
+The bundled miners build as follows:
+
+```sh
+go build -o cpuminer ./cmd/cpuminer   # CPU stratum miner
+make -C cmd/gpuminer                  # GPU stratum miner (also builds the OpenCL host)
+```
+
 ## Configure
 
 Copy `sample-monetarium-stratum.conf` to
@@ -101,6 +108,38 @@ Flags: `--pool` (default `127.0.0.1:5550`), `--user`, `--password`,
 `--net` (`mainnet`, `testnet3`, `simnet`, `regnet`; default `mainnet`),
 `--threads` (parallel hashing, default 1), `--debug`.
 
+## GPU mining
+
+`cmd/gpuminer` is a stratum-only GPU miner.  It drives a small OpenCL host
+subprocess that runs the BLAKE3 nonce search on the GPU, while the Go process
+handles the stratum connection, job reconstruction and share submission.  There
+is no getwork/RPC path — it talks to the pool exactly like `cmd/cpuminer`.
+
+The GPU searches the full 2^32 nonce space for one header; when a sweep
+completes without a solution (or after a share is found) the miner rolls
+`extraNonce2` and re-sends the same job with the new value, giving a fresh
+disjoint nonce space per sweep.
+
+Requirements: a working OpenCL implementation (the host lists the platforms and
+devices it finds on startup and picks the first physical GPU), plus a C++
+compiler to build the host.
+
+```sh
+# from the repo root
+make -C cmd/gpuminer        # builds the OpenCL host and the gpuminer binary
+
+./cmd/gpuminer/gpuminer --pool 127.0.0.1:5550 --user worker1 --password x \
+  --net mainnet
+```
+
+The miner reports hashrate, accepted/rejected shares and found blocks every few
+seconds.
+
+Flags: `--pool` (default `127.0.0.1:5550`), `--user`, `--password`,
+`--net` (`mainnet`, `testnet3`, `simnet`, `regnet`; default `mainnet`),
+`--host` (path to the OpenCL host binary, default `./host`),
+`--kernels` (OpenCL kernel directory, default `./cl`), `--debug`.
+
 ### Share difficulty on a young network
 
 The pool's share target is `PowLimit / sharedifficulty`.  On a network whose
@@ -153,7 +192,8 @@ go test ./...
 
 Tests cover header field placement, the notify format round trip (gominer's
 exact reconstruction), share/block evaluation, the work manager, the stratum
-protocol, the full submit path, and the block throttle matrix.
+protocol, the full submit path, the block throttle matrix, and the GPU miner's
+header reconstruction, little-endian share target and extraNonce2 rollover.
 
 ## License
 
