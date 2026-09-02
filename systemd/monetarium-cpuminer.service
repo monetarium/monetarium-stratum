@@ -1,0 +1,19 @@
+[Unit]
+Description=Monetarium CPU stratum miner
+Requires=monetarium-stratum.service
+After=monetarium-stratum.service
+
+[Service]
+ExecStart=/usr/local/bin/cpuminer \
+	--pool 127.0.0.1:5550 \
+	--user worker1 \
+	--password x \
+	--net mainnet \
+	--threads 4
+Restart=on-failure
+RestartSec=5
+User=monetarium
+Group=monetarium
+
+[Install]
+WantedBy=multi-user.target

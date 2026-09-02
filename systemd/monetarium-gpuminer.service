@@ -1,0 +1,20 @@
+[Unit]
+Description=Monetarium GPU stratum miner
+Requires=monetarium-stratum.service
+After=monetarium-stratum.service
+
+[Service]
+ExecStart=/usr/local/bin/gpuminer \
+	--pool 127.0.0.1:5550 \
+	--user worker1 \
+	--password x \
+	--net mainnet \
+	--host /usr/local/bin/host \
+	--kernels /usr/local/lib/monetarium-gpuminer/cl
+Restart=on-failure
+RestartSec=5
+User=monetarium
+Group=monetarium
+
+[Install]
+WantedBy=multi-user.target

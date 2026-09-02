@@ -178,9 +178,63 @@ counters are shown in the periodic stats log line.
 
 ## Deployment
 
-Install the binary to `/usr/local/bin/monetarium-stratum` and use the provided
-systemd unit (`systemd/monetarium-stratum.service`), which starts the pool
-after `monetarium-node.service`.
+Install the binaries and the units, then let systemd manage the whole stack.
+
+### Binaries
+
+Install each binary to `/usr/local/bin`:
+
+```sh
+go build -o /usr/local/bin/monetarium-stratum .
+go build -o /usr/local/bin/cpuminer ./cmd/cpuminer
+make -C cmd/gpuminer                     # builds gpuminer and the OpenCL host
+install -m 0755 cmd/gpuminer/gpuminer /usr/local/bin/gpuminer
+install -m 0755 cmd/gpuminer/host /usr/local/bin/host
+install -d /usr/local/lib/monetarium-gpuminer
+cp -r cmd/gpuminer/cl /usr/local/lib/monetarium-gpuminer/
+```
+
+The GPU miner needs the OpenCL host binary and the `cl/` kernel directory at
+the absolute paths it is started with; the units below expect them at
+`/usr/local/bin/host` and `/usr/local/lib/monetarium-gpuminer/cl`.
+
+### systemd units
+
+Copy the units, create the system user, and enable them:
+
+```sh
+install -m 0644 systemd/monetarium-stratum.service  /etc/systemd/system/
+install -m 0644 systemd/monetarium-cpuminer.service /etc/systemd/system/
+install -m 0644 systemd/monetarium-gpuminer.service /etc/systemd/system/
+
+# system user under which the services run
+useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin monetarium
+
+install -d -o monetarium -g monetarium /etc/monetarium-stratum
+install -m 0644 sample-monetarium-stratum.conf /etc/monetarium-stratum/monetarium-stratum.conf
+
+systemctl daemon-reload
+systemctl enable --now monetarium-stratum.service
+# only if you want a miner on this host
+systemctl enable --now monetarium-cpuminer.service     # or monetarium-gpuminer.service
+```
+
+The pool unit starts after `monetarium-node.service` and requires it; the miner
+units start after (and restart with) the pool. The stratum pool also reads its
+configuration from `--configfile=/etc/monetarium-stratum/monetarium-stratum.conf`
+(copy `sample-monetarium-stratum.conf` and edit `rpcuser`/`rpcpass`/`rpccert`).
+
+The miners have no config file; set their flags directly in the unit's
+`ExecStart`:
+
+- `monetarium-cpuminer.service` — `--user`, `--password`, `--threads`.
+- `monetarium-gpuminer.service` — `--user`, `--password`, and (only if you
+  changed the deploy paths) `--host` / `--kernels`.
+
+After editing a unit, run `systemctl daemon-reload` and `systemctl restart
+monetarium-cpuminer.service` (or the GPU unit).
+
+Check status with `systemctl status monetarium-{stratum,cpuminer,gpuminer}.service`.
 
 ## Development
 
