@@ -207,8 +207,11 @@ install -m 0644 systemd/monetarium-stratum.service  /etc/systemd/system/
 install -m 0644 systemd/monetarium-cpuminer.service /etc/systemd/system/
 install -m 0644 systemd/monetarium-gpuminer.service /etc/systemd/system/
 
-# system user under which the services run
-useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin monetarium
+# system user under which the services run. The GPU miner caches state in the
+# home directory, so it needs a real, writable home rather than /nonexistent,
+# and membership in the render group to access the GPU's /dev entries.
+useradd --system --create-home --home-dir /var/local/monetarium \
+	--shell /usr/sbin/nologin -G render monetarium
 
 install -d -o monetarium -g monetarium /etc/monetarium-stratum
 install -m 0644 sample-monetarium-stratum.conf /etc/monetarium-stratum/monetarium-stratum.conf

@@ -15,6 +15,11 @@ Restart=on-failure
 RestartSec=5
 User=monetarium
 Group=monetarium
+# The GPU miner caches state in the home directory, so it needs a real home,
+# and the render group to open the GPU's /dev entries. Specified explicitly so
+# new group membership is picked up regardless of when it was added.
+Environment=HOME=/var/local/monetarium
+SupplementaryGroups=render
 
 [Install]
 WantedBy=multi-user.target
