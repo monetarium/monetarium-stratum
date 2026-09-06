@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 
 	"github.com/decred/slog"
@@ -52,8 +53,8 @@ type gpuHost struct {
 }
 
 // startGpuHost launches the host binary and wires its output channels.
-func startGpuHost(hostPath, kernelDir string, log slog.Logger) (*gpuHost, error) {
-	cmd := exec.Command(hostPath, kernelDir)
+func startGpuHost(hostPath, kernelDir string, deviceIdx int, log slog.Logger) (*gpuHost, error) {
+	cmd := exec.Command(hostPath, kernelDir, strconv.Itoa(deviceIdx))
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)

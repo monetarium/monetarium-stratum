@@ -110,7 +110,9 @@ int cl_load(void) {
 #endif
 }
 
-bool initOpenCL(const std::string& kernelDir) {
+// deviceIdx selects a specific GPU device index; -1 means auto (the first
+// device of the first physical GPU platform, as before).
+bool initOpenCL(const std::string& kernelDir, int deviceIdx) {
     if (cl_load() != 0) {
         std::cerr << "OpenCL library not found\n";
         return false;
@@ -160,7 +162,15 @@ bool initOpenCL(const std::string& kernelDir) {
 
         if (chosenDevice == 0) {
             chosenPlatform = platforms[pi];
-            chosenDevice = devices[0];
+            if (deviceIdx < 0) {
+                chosenDevice = devices[0];
+            } else if ((cl_uint)deviceIdx < ndevices) {
+                chosenDevice = devices[deviceIdx];
+            } else {
+                std::cerr << "device index " << deviceIdx << " out of range (0-"
+                          << (ndevices - 1) << ")\n";
+                return false;
+            }
         }
     }
 
@@ -578,7 +588,10 @@ int main(int argc, char* argv[]) {
     std::string kernelDir = ".";
     if (argc > 1) kernelDir = argv[1];
 
-    if (!initOpenCL(kernelDir)) {
+    int deviceIdx = -1;
+    if (argc > 2) deviceIdx = atoi(argv[2]);
+
+    if (!initOpenCL(kernelDir, deviceIdx)) {
         std::cerr << "OpenCL init failed\n";
         return 1;
     }

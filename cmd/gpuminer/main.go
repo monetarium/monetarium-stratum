@@ -23,6 +23,7 @@ type config struct {
 	net      string
 	host     string
 	kernels  string
+	device   int
 	debug    bool
 }
 
@@ -36,6 +37,7 @@ func parseConfig() *config {
 		"network (mainnet, testnet3, simnet, regnet) used to derive the share target")
 	flag.StringVar(&cfg.host, "host", "./host", "path to GPU host binary")
 	flag.StringVar(&cfg.kernels, "kernels", "./cl", "path to OpenCL kernel directory")
+	flag.IntVar(&cfg.device, "device", -1, "GPU device index (-1 = auto)")
 	flag.BoolVar(&cfg.debug, "debug", false, "enable debug logging")
 	flag.Parse()
 	return cfg
@@ -96,6 +98,7 @@ func main() {
 		Net:      params,
 		Host:     cfg.host,
 		Kernels:  cfg.kernels,
+		Device:   cfg.device,
 		Log:      logger,
 	})
 

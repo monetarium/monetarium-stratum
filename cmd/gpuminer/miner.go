@@ -66,6 +66,7 @@ type MinerConfig struct {
 	Net      *chaincfg.Params
 	Host     string
 	Kernels  string
+	Device   int
 	Log      slog.Logger
 }
 
@@ -238,7 +239,7 @@ func NewMiner(ctx context.Context, cfg MinerConfig) *Miner {
 // Run connects to the pool and mines until the context is cancelled,
 // reconnecting automatically when the connection is lost.
 func (m *Miner) Run() error {
-	host, err := startGpuHost(m.cfg.Host, m.cfg.Kernels, m.log)
+	host, err := startGpuHost(m.cfg.Host, m.cfg.Kernels, m.cfg.Device, m.log)
 	if err != nil {
 		return fmt.Errorf("unable to start GPU host: %w", err)
 	}
