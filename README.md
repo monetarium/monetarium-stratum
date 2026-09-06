@@ -121,8 +121,13 @@ completes without a solution (or after a share is found) the miner rolls
 disjoint nonce space per sweep.
 
 Requirements: a working OpenCL implementation (the host lists the platforms and
-devices it finds on startup and picks the first physical GPU), plus a C++
-compiler to build the host.
+devices it finds on startup), plus a C++ compiler to build the host.  By default
+the host picks the first physical GPU; use `--device` to target a specific one.
+
+The kernel is optimized for nonce sweeping: the first two header blocks never
+change while the nonce varies, so the host compresses them once per job into a
+BLAKE3 midstate (chaining value) and the device performs a single compression
+per nonce, resuming from that midstate.
 
 ```sh
 # from the repo root
@@ -138,7 +143,19 @@ seconds.
 Flags: `--pool` (default `127.0.0.1:5550`), `--user`, `--password`,
 `--net` (`mainnet`, `testnet3`, `simnet`, `regnet`; default `mainnet`),
 `--host` (path to the OpenCL host binary, default `./host`),
-`--kernels` (OpenCL kernel directory, default `./cl`), `--debug`.
+`--kernels` (OpenCL kernel directory, default `./cl`),
+`--device` (GPU device index, 0-based, default `-1` = auto), `--debug`.
+
+On a machine with multiple GPUs run one instance per GPU, each pinned to its own
+device (e.g. a mining rig):
+
+```sh
+./cmd/gpuminer/gpuminer --pool host:port --user worker0 --device 0 --net mainnet
+./cmd/gpuminer/gpuminer --pool host:port --user worker1 --device 1 --net mainnet
+```
+
+The host prints the numbered device list (`device[0]:`, `device[1]:`, ...) at
+startup so you can see which index maps to which card.
 
 ### Share difficulty on a young network
 
