@@ -24,7 +24,7 @@ static inline void G(uint32_t* v, int a, int b, int c, int d, uint32_t x, uint32
     v[b] = ROTR32(v[b] ^ v[c], 7);
 }
 
-static inline void blake3_compress(uint32_t* m, const uint32_t* cv,
+static inline void blake3_compress(uint32_t* m, __constant const uint32_t* cv,
                                    uint32_t counter, uint32_t block_len,
                                    uint32_t flags, uint32_t* out) {
     uint32_t v[16];
@@ -106,9 +106,21 @@ static inline void blake3_compress(uint32_t* m, const uint32_t* cv,
     for (int i = 0; i < 8; i++) out[i] = v[i];
 }
 
+/* search_nonce resumes from a precomputed BLAKE3 midstate.
+ *
+ * The first 128 bytes of the header never change while sweeping the nonce, so
+ * the host compresses blocks 0 and 1 once per work message and hands the device
+ * the resulting chaining value (cv) plus the fixed block-2 words.  The device
+ * performs a single compression per nonce by injecting the nonce into block-2
+ * word 3 (bytes 140-143).
+ *
+ * cv[8]     — chaining value after blocks 0 and 1.
+ * block2[16]— block 2 words (bytes 128-191); word 3 is the nonce slot and is 0.
+ */
 __attribute__((reqd_work_group_size(64, 1, 1)))
 __kernel void search_nonce(
-    __global const uchar* header,
+    __constant const uint32_t* cv,
+    __constant const uint32_t* block2,
     __global const uchar* target,
     __global volatile int* result,
     __global uchar* hash_out,
@@ -121,33 +133,12 @@ __kernel void search_nonce(
     uint nonce = start_nonce + gid;
     if (nonce == 0) return;
 
-    uint32_t cv[8] = {IV[0], IV[1], IV[2], IV[3], IV[4], IV[5], IV[6], IV[7]};
-    uint32_t tmp[8];
-
-    /* Block 0 (bytes 0-63): read directly from global — no nonce here */
-    uint32_t m0[16];
-    for (int i = 0; i < 16; i++)
-        m0[i] = ((__global const uint32_t*)header)[i];
-    blake3_compress(m0, cv, 0, 64, 0x01, tmp);
-    for (int i = 0; i < 8; i++) cv[i] = tmp[i];
-
-    /* Block 1 (bytes 64-127): read directly from global — no nonce here */
-    uint32_t m1[16];
-    for (int i = 0; i < 16; i++)
-        m1[i] = ((__global const uint32_t*)(header + 64))[i];
-    blake3_compress(m1, cv, 0, 64, 0x00, tmp);
-    for (int i = 0; i < 8; i++) cv[i] = tmp[i];
-
-    /* Block 2 (bytes 128-191): copy from global, inject nonce, zero-pad */
+    /* Block 2 (bytes 128-191): copy fixed words, inject the nonce, zero-pad */
     uint32_t m2[16];
-    /* Words 0-12: bytes 128-179 (includes extra data / extra nonce region) */
-    for (int i = 0; i < 13; i++)
-        m2[i] = ((__global const uint32_t*)(header + 128))[i];
-    /* Word 3: bytes 140-143 = nonce */
+    for (int i = 0; i < 16; i++) m2[i] = block2[i];
     m2[3] = nonce;
-    /* Words 13-15: zero padding (bytes 180-191) */
-    m2[13] = 0; m2[14] = 0; m2[15] = 0;
 
+    uint32_t tmp[8];
     blake3_compress(m2, cv, 0, 52, 0x02 | 0x08, tmp);
 
     /* Compare hash (uint256 LE) <= target */

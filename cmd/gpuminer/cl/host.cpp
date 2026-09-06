@@ -260,26 +260,113 @@ static void setNonce(uint8_t* header, uint32_t nonce) {
     header[143] = (uint8_t)((nonce >> 24) & 0xFF);
 }
 
-bool search_gpu(const std::vector<uint8_t>& header_base, const std::vector<uint8_t>& target,
+/* ---- BLAKE3 block compression (host-side midstate) ----
+ * Mirrors blake3_compress in kernel.cl.  The first two header blocks are
+ * compressed once per work message to produce the chaining value (cv) the
+ * kernel resumes from, so the device performs a single compression per nonce.
+ */
+
+static const uint32_t B3_IV[8] = {
+    0x6A09E667U, 0xBB67AE85U, 0x3C6EF372U, 0xA54FF53AU,
+    0x510E527FU, 0x9B05688CU, 0x1F83D9ABU, 0x5BE0CD19U
+};
+
+static inline uint32_t b3_rotr32(uint32_t x, int n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+static inline void b3_g(uint32_t* v, int a, int b, int c, int d,
+                        uint32_t x, uint32_t y) {
+    v[a] = v[a] + v[b] + x;
+    v[d] = b3_rotr32(v[d] ^ v[a], 16);
+    v[c] = v[c] + v[d];
+    v[b] = b3_rotr32(v[b] ^ v[c], 12);
+    v[a] = v[a] + v[b] + y;
+    v[d] = b3_rotr32(v[d] ^ v[a], 8);
+    v[c] = v[c] + v[d];
+    v[b] = b3_rotr32(v[b] ^ v[c], 7);
+}
+
+static void b3_compress(const uint32_t* m, const uint32_t* cv,
+                        uint32_t counter, uint32_t block_len,
+                        uint32_t flags, uint32_t* out) {
+    uint32_t v[16];
+    v[ 0] = cv[0]; v[ 1] = cv[1]; v[ 2] = cv[2]; v[ 3] = cv[3];
+    v[ 4] = cv[4]; v[ 5] = cv[5]; v[ 6] = cv[6]; v[ 7] = cv[7];
+    v[ 8] = B3_IV[0]; v[ 9] = B3_IV[1]; v[10] = B3_IV[2]; v[11] = B3_IV[3];
+    v[12] = counter; v[13] = 0; v[14] = block_len; v[15] = flags;
+
+    uint32_t w[16], t[16];
+    memcpy(w, m, 64);
+    for (int r = 0; r < 7; r++) {
+        b3_g(v,0,4,8,12, w[0],w[1]); b3_g(v,1,5,9,13, w[2],w[3]);
+        b3_g(v,2,6,10,14, w[4],w[5]); b3_g(v,3,7,11,15, w[6],w[7]);
+        b3_g(v,0,5,10,15, w[8],w[9]); b3_g(v,1,6,11,12, w[10],w[11]);
+        b3_g(v,2,7,8,13, w[12],w[13]); b3_g(v,3,4,9,14, w[14],w[15]);
+        if (r == 6) break;
+        memcpy(t, w, 64);
+        w[0]=t[2];w[1]=t[6];w[2]=t[3];w[3]=t[10];w[4]=t[7];w[5]=t[0];
+        w[6]=t[4];w[7]=t[13];w[8]=t[1];w[9]=t[11];w[10]=t[12];w[11]=t[5];
+        w[12]=t[9];w[13]=t[14];w[14]=t[15];w[15]=t[8];
+    }
+
+    for (int i = 0; i < 8; i++) {
+        v[i]     ^= v[i + 8];
+        v[i + 8] ^= cv[i];
+    }
+    for (int i = 0; i < 8; i++) out[i] = v[i];
+}
+
+// Compute the BLAKE3 midstate over the first two header blocks and the fixed
+// block-2 words.  The nonce word (block2[3], bytes 140-143) is zeroed so the
+// kernel injects the swept nonce.
+static void computeMidstate(const uint8_t* header, uint32_t cv[8],
+                            uint32_t block2[16]) {
+    uint32_t m[16], tmp[8];
+    for (int i = 0; i < 8; i++) cv[i] = B3_IV[i];
+
+    memcpy(m, header, 64);
+    b3_compress(m, cv, 0, 64, 0x01, tmp);
+    memcpy(cv, tmp, 32);
+
+    memcpy(m, header + 64, 64);
+    b3_compress(m, cv, 0, 64, 0x00, tmp);
+    memcpy(cv, tmp, 32);
+
+    memset(block2, 0, 64);
+    memcpy(block2, header + 128, 52);
+    block2[3] = 0;
+}
+
+bool search_gpu(const uint32_t* cv, const uint32_t* block2,
+                const std::vector<uint8_t>& target,
                 uint32_t start_nonce, uint32_t batch_size, uint32_t* found_nonce,
                 std::vector<uint8_t>* found_hash) {
     cl_int err;
 
-    cl_uint zero_val = 0;
     cl_uint nonce_val = 0;
 
-    cl_mem header_buf = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                        HEADER_SIZE, (void*)header_base.data(), &err);
+    cl_mem cv_buf = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                    32, (void*)cv, &err);
     if (err != CL_SUCCESS) return false;
+
+    cl_mem b2_buf = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                    64, (void*)block2, &err);
+    if (err != CL_SUCCESS) { clReleaseMemObject(cv_buf); return false; }
 
     cl_mem target_buf = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                                         HASH_SIZE, (void*)target.data(), &err);
-    if (err != CL_SUCCESS) { clReleaseMemObject(header_buf); return false; }
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(cv_buf);
+        clReleaseMemObject(b2_buf);
+        return false;
+    }
 
     cl_mem result_buf = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
                                         sizeof(cl_uint), &nonce_val, &err);
     if (err != CL_SUCCESS) {
-        clReleaseMemObject(header_buf);
+        clReleaseMemObject(cv_buf);
+        clReleaseMemObject(b2_buf);
         clReleaseMemObject(target_buf);
         return false;
     }
@@ -287,19 +374,20 @@ bool search_gpu(const std::vector<uint8_t>& header_base, const std::vector<uint8
     cl_mem hash_buf = clCreateBuffer(g_ctx, CL_MEM_WRITE_ONLY,
                                        HASH_SIZE, nullptr, &err);
     if (err != CL_SUCCESS) {
-        clReleaseMemObject(header_buf);
+        clReleaseMemObject(cv_buf);
+        clReleaseMemObject(b2_buf);
         clReleaseMemObject(target_buf);
         clReleaseMemObject(result_buf);
         return false;
     }
 
-    clSetKernelArg(g_kernel, 0, sizeof(cl_mem), &header_buf);
-    clSetKernelArg(g_kernel, 1, sizeof(cl_mem), &target_buf);
-    clSetKernelArg(g_kernel, 2, sizeof(cl_mem), &result_buf);
-    clSetKernelArg(g_kernel, 3, sizeof(cl_mem), &hash_buf);
-    clSetKernelArg(g_kernel, 4, sizeof(cl_uint), &start_nonce);
-    clSetKernelArg(g_kernel, 5, sizeof(cl_uint), &batch_size);
-    clSetKernelArg(g_kernel, 6, sizeof(cl_uint), &zero_val);
+    clSetKernelArg(g_kernel, 0, sizeof(cl_mem), &cv_buf);
+    clSetKernelArg(g_kernel, 1, sizeof(cl_mem), &b2_buf);
+    clSetKernelArg(g_kernel, 2, sizeof(cl_mem), &target_buf);
+    clSetKernelArg(g_kernel, 3, sizeof(cl_mem), &result_buf);
+    clSetKernelArg(g_kernel, 4, sizeof(cl_mem), &hash_buf);
+    clSetKernelArg(g_kernel, 5, sizeof(cl_uint), &start_nonce);
+    clSetKernelArg(g_kernel, 6, sizeof(cl_uint), &batch_size);
 
     size_t global_size = batch_size;
     size_t local_size = 64;
@@ -317,7 +405,8 @@ bool search_gpu(const std::vector<uint8_t>& header_base, const std::vector<uint8
     close(saved_stdout);
     if (err != CL_SUCCESS) {
         std::cerr << "clEnqueueNDRangeKernel failed: " << getCLError(err) << "\n";
-        clReleaseMemObject(header_buf);
+        clReleaseMemObject(cv_buf);
+        clReleaseMemObject(b2_buf);
         clReleaseMemObject(target_buf);
         clReleaseMemObject(result_buf);
         clReleaseMemObject(hash_buf);
@@ -337,7 +426,8 @@ bool search_gpu(const std::vector<uint8_t>& header_base, const std::vector<uint8
         clEnqueueReadBuffer(g_queue, hash_buf, CL_TRUE, 0, HASH_SIZE, found_hash->data(), 0, nullptr, nullptr);
     }
 
-    clReleaseMemObject(header_buf);
+    clReleaseMemObject(cv_buf);
+    clReleaseMemObject(b2_buf);
     clReleaseMemObject(target_buf);
     clReleaseMemObject(result_buf);
     clReleaseMemObject(hash_buf);
@@ -346,6 +436,10 @@ bool search_gpu(const std::vector<uint8_t>& header_base, const std::vector<uint8
 }
 
 void handleWork(const std::vector<uint8_t>& header, const std::vector<uint8_t>& target) {
+    uint32_t cv[8];
+    uint32_t block2[16];
+    computeMidstate(header.data(), cv, block2);
+
     uint32_t start_nonce = 1;
     uint32_t batch_size = 64 * 1024 * 1024;
     uint32_t found_nonce = 0;
@@ -358,7 +452,7 @@ void handleWork(const std::vector<uint8_t>& header, const std::vector<uint8_t>& 
         uint32_t nonce_out = 0;
         std::vector<uint8_t> hash_out;
 
-        if (!search_gpu(header, target, start_nonce, batch_size, &nonce_out, &hash_out)) {
+        if (!search_gpu(cv, block2, target, start_nonce, batch_size, &nonce_out, &hash_out)) {
             std::cout << "{\"type\":\"error\",\"msg\":\"GPU search failed\"}\n" << std::flush;
             g_searching = false;
             return;
