@@ -110,19 +110,27 @@ Flags: `--pool` (default `127.0.0.1:5550`), `--user`, `--password`,
 
 ## GPU mining
 
-`cmd/gpuminer` is a stratum-only GPU miner.  It drives a small OpenCL host
-subprocess that runs the BLAKE3 nonce search on the GPU, while the Go process
-handles the stratum connection, job reconstruction and share submission.  There
-is no getwork/RPC path — it talks to the pool exactly like `cmd/cpuminer`.
+`cmd/gpuminer` is a stratum-only GPU miner.  It drives a small host subprocess
+that runs the BLAKE3 nonce search on the GPU, while the Go process handles the
+stratum connection, job reconstruction and share submission.  There is no
+getwork/RPC path — it talks to the pool exactly like `cmd/cpuminer`.  Two host
+backends are built, selectable with `--backend`:
+
+- `opencl` (default) — an OpenCL host speaking to any OpenCL implementation
+  (AMD, NVIDIA, Intel, PoCL).  Requires no SDK at build time; the OpenCL
+  library is loaded at runtime.
+- `cuda` — a CUDA host for NVIDIA GPUs, using the runtime-compiled kernel
+  (nvrtc).  Requires the NVIDIA driver (`libcuda`) and the CUDA toolkit's
+  `libnvrtc.so` at runtime, but no CUDA SDK at build time.
 
 The GPU searches the full 2^32 nonce space for one header; when a sweep
 completes without a solution (or after a share is found) the miner rolls
 `extraNonce2` and re-sends the same job with the new value, giving a fresh
 disjoint nonce space per sweep.
 
-Requirements: a working OpenCL implementation (the host lists the platforms and
-devices it finds on startup), plus a C++ compiler to build the host.  By default
-the host picks the first physical GPU; use `--device` to target a specific one.
+Requirements: a working OpenCL implementation or NVIDIA CUDA driver + toolkit,
+plus a C++ compiler to build the host.  By default the host picks the first
+physical GPU; use `--device` to target a specific one.
 
 The kernel is optimized for nonce sweeping: the first two header blocks never
 change while the nonce varies, so the host compresses them once per job into a
@@ -131,10 +139,15 @@ per nonce, resuming from that midstate.
 
 ```sh
 # from the repo root
-make -C cmd/gpuminer        # builds the OpenCL host and the gpuminer binary
+make -C cmd/gpuminer        # builds both hosts (host, cuda_host) and gpuminer
 
+# OpenCL (default)
 ./cmd/gpuminer/gpuminer --pool 127.0.0.1:5550 --user worker1 --password x \
   --net mainnet
+
+# CUDA
+./cmd/gpuminer/gpuminer --backend cuda --pool 127.0.0.1:5550 \
+  --user worker1 --password x --net mainnet
 ```
 
 The miner reports hashrate, accepted/rejected shares and found blocks every few
@@ -142,8 +155,11 @@ seconds.
 
 Flags: `--pool` (default `127.0.0.1:5550`), `--user`, `--password`,
 `--net` (`mainnet`, `testnet3`, `simnet`, `regnet`; default `mainnet`),
-`--host` (path to the OpenCL host binary, default `./host`),
-`--kernels` (OpenCL kernel directory, default `./cl`),
+`--backend` (`opencl` or `cuda`; default `opencl`),
+`--host` (path to the host binary, default `./host`, or `./cuda_host` with
+`--backend cuda`),
+`--kernels` (kernel source directory, default `./cl`, or `./cuda` with
+`--backend cuda`),
 `--device` (GPU device index, 0-based, default `-1` = auto), `--debug`.
 
 On a machine with multiple GPUs run one instance per GPU, each pinned to its own
@@ -204,16 +220,20 @@ Install each binary to `/usr/local/bin`:
 ```sh
 go build -o /usr/local/bin/monetarium-stratum .
 go build -o /usr/local/bin/cpuminer ./cmd/cpuminer
-make -C cmd/gpuminer                     # builds gpuminer and the OpenCL host
+make -C cmd/gpuminer                     # builds gpuminer and both hosts
 install -m 0755 cmd/gpuminer/gpuminer /usr/local/bin/gpuminer
 install -m 0755 cmd/gpuminer/host /usr/local/bin/host
+install -m 0755 cmd/gpuminer/cuda_host /usr/local/bin/cuda_host
 install -d /usr/local/lib/monetarium-gpuminer
 cp -r cmd/gpuminer/cl /usr/local/lib/monetarium-gpuminer/
+cp -r cmd/gpuminer/cuda /usr/local/lib/monetarium-gpuminer/
 ```
 
-The GPU miner needs the OpenCL host binary and the `cl/` kernel directory at
+The GPU miner needs the chosen host binary and its kernel source directory at
 the absolute paths it is started with; the units below expect them at
-`/usr/local/bin/host` and `/usr/local/lib/monetarium-gpuminer/cl`.
+`/usr/local/bin/host` and `/usr/local/lib/monetarium-gpuminer/cl` (OpenCL), or
+`/usr/local/bin/cuda_host` and `/usr/local/lib/monetarium-gpuminer/cuda`
+(CUDA).
 
 ### systemd units
 
@@ -248,8 +268,9 @@ The miners have no config file; set their flags directly in the unit's
 `ExecStart`:
 
 - `monetarium-cpuminer.service` — `--user`, `--password`, `--threads`.
-- `monetarium-gpuminer.service` — `--user`, `--password`, and (only if you
-  changed the deploy paths) `--host` / `--kernels`.
+- `monetarium-gpuminer.service` — `--user`, `--password`.  The shipped unit
+  runs the OpenCL backend; to use CUDA, add `--backend cuda` and point
+  `--host` / `--kernels` at `cuda_host` and the `cuda/` directory.
 
 After editing a unit, run `systemctl daemon-reload` and `systemctl restart
 monetarium-cpuminer.service` (or the GPU unit).

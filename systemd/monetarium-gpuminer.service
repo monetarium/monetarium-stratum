@@ -4,6 +4,9 @@ Requires=monetarium-stratum.service
 After=monetarium-stratum.service
 
 [Service]
+# Uses the OpenCL backend by default. For CUDA, add --backend cuda and point
+# --host / --kernels at /usr/local/bin/cuda_host and
+# /usr/local/lib/monetarium-gpuminer/cuda.
 ExecStart=/usr/local/bin/gpuminer \
 	--pool 127.0.0.1:5550 \
 	--user worker1 \

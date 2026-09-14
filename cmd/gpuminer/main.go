@@ -25,6 +25,7 @@ type config struct {
 	kernels  string
 	device   int
 	debug    bool
+	backend  string
 }
 
 // parseConfig parses the command line flags.
@@ -35,11 +36,33 @@ func parseConfig() *config {
 	flag.StringVar(&cfg.password, "password", "", "worker password")
 	flag.StringVar(&cfg.net, "net", "mainnet",
 		"network (mainnet, testnet3, simnet, regnet) used to derive the share target")
+	flag.StringVar(&cfg.backend, "backend", "opencl",
+		"GPU backend (opencl or cuda)")
 	flag.StringVar(&cfg.host, "host", "./host", "path to GPU host binary")
-	flag.StringVar(&cfg.kernels, "kernels", "./cl", "path to OpenCL kernel directory")
+	flag.StringVar(&cfg.kernels, "kernels", "./cl", "path to GPU kernel source directory")
 	flag.IntVar(&cfg.device, "device", -1, "GPU device index (-1 = auto)")
 	flag.BoolVar(&cfg.debug, "debug", false, "enable debug logging")
 	flag.Parse()
+
+	switch cfg.backend {
+	case "opencl", "cuda":
+	default:
+		fmt.Fprintf(os.Stderr, "unknown backend %q (expected opencl or cuda)\n", cfg.backend)
+		os.Exit(2)
+	}
+
+	// The backend selects the host binary and kernel directory defaults; an
+	// explicit --host or --kernels flag always wins.
+	set := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if cfg.backend == "cuda" {
+		if !set["host"] {
+			cfg.host = "./cuda_host"
+		}
+		if !set["kernels"] {
+			cfg.kernels = "./cuda"
+		}
+	}
 	return cfg
 }
 
@@ -102,7 +125,7 @@ func main() {
 		Log:      logger,
 	})
 
-	logger.Infof("monetarium-gpuminer %s starting (%s, GPU)", version, cfg.net)
+	logger.Infof("monetarium-gpuminer %s starting (%s, %s)", version, cfg.net, cfg.backend)
 	if err := miner.Run(); err != nil {
 		logger.Errorf("miner failed: %v", err)
 		os.Exit(1)
