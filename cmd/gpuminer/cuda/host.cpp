@@ -91,6 +91,19 @@ static std::string nvrtcErrorString(nvrtcResult err) {
     return "NVRTC_ERROR(" + std::to_string(err) + ")";
 }
 
+// The driver API versions entry points per-function with a "_v2" suffix when
+// the ABI changed (e.g. unsigned int -> size_t size params).  Calling a plain
+// legacy symbol against a context created by a modern (v2) API is rejected
+// with CUDA_ERROR_INVALID_CONTEXT (see "Rules for version mixing" in the CUDA
+// driver API docs).  Prefer the _v2 symbol and fall back to the plain name on
+// older drivers that predate the versioned entry point.
+static void* cuSym(void* h, const char* base) {
+    std::string v2 = std::string(base) + "_v2";
+    void* p = dlsym(h, v2.c_str());
+    if (!p) p = dlsym(h, base);
+    return p;
+}
+
 static int cu_load(void) {
 #if defined(__linux__)
     void* h = dlopen("libcuda.so.1", RTLD_NOW);
@@ -106,12 +119,12 @@ static int cu_load(void) {
     cuCtxDestroy_v2      = (pfn_cuCtxDestroy_v2)     dlsym(h, "cuCtxDestroy_v2");
     cuModuleLoadDataEx   = (pfn_cuModuleLoadDataEx)  dlsym(h, "cuModuleLoadDataEx");
     cuModuleGetFunction  = (pfn_cuModuleGetFunction) dlsym(h, "cuModuleGetFunction");
-    cuModuleGetGlobal    = (pfn_cuModuleGetGlobal)   dlsym(h, "cuModuleGetGlobal");
+    cuModuleGetGlobal    = (pfn_cuModuleGetGlobal)   cuSym(h, "cuModuleGetGlobal");
     cuModuleUnload       = (pfn_cuModuleUnload)      dlsym(h, "cuModuleUnload");
-    cuMemAlloc           = (pfn_cuMemAlloc)          dlsym(h, "cuMemAlloc");
-    cuMemcpyHtoD         = (pfn_cuMemcpyHtoD)        dlsym(h, "cuMemcpyHtoD");
-    cuMemcpyDtoH         = (pfn_cuMemcpyDtoH)        dlsym(h, "cuMemcpyDtoH");
-    cuMemsetD8           = (pfn_cuMemsetD8)          dlsym(h, "cuMemsetD8");
+    cuMemAlloc           = (pfn_cuMemAlloc)          cuSym(h, "cuMemAlloc");
+    cuMemcpyHtoD         = (pfn_cuMemcpyHtoD)        cuSym(h, "cuMemcpyHtoD");
+    cuMemcpyDtoH         = (pfn_cuMemcpyDtoH)        cuSym(h, "cuMemcpyDtoH");
+    cuMemsetD8           = (pfn_cuMemsetD8)          cuSym(h, "cuMemsetD8");
     cuLaunchKernel       = (pfn_cuLaunchKernel)      dlsym(h, "cuLaunchKernel");
     cuCtxSynchronize     = (pfn_cuCtxSynchronize)    dlsym(h, "cuCtxSynchronize");
     cuGetErrorString     = (pfn_cuGetErrorString)    dlsym(h, "cuGetErrorString");
