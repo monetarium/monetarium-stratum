@@ -61,6 +61,8 @@ typedef int32_t nvrtcResult;
 
 typedef nvrtcResult (*pfn_nvrtcCreateProgram)(nvrtcProgram*, const char*, const char*,
                                               int, const char**, const char**);
+typedef nvrtcResult (*pfn_nvrtcAddNameExpression)(nvrtcProgram, const char*);
+typedef nvrtcResult (*pfn_nvrtcGetLoweredName)(nvrtcProgram, const char*, const char**);
 typedef nvrtcResult (*pfn_nvrtcCompileProgram)(nvrtcProgram, int, const char**);
 typedef nvrtcResult (*pfn_nvrtcGetPTXSize)(nvrtcProgram, size_t*);
 typedef nvrtcResult (*pfn_nvrtcGetPTX)(nvrtcProgram, char*);

@@ -50,6 +50,8 @@ pfn_cuGetErrorString     cuGetErrorString     = nullptr;
 pfn_cuGetErrorName       cuGetErrorName       = nullptr;
 
 pfn_nvrtcCreateProgram       nvrtcCreateProgram       = nullptr;
+pfn_nvrtcAddNameExpression   nvrtcAddNameExpression   = nullptr;
+pfn_nvrtcGetLoweredName      nvrtcGetLoweredName      = nullptr;
 pfn_nvrtcCompileProgram      nvrtcCompileProgram      = nullptr;
 pfn_nvrtcGetPTXSize          nvrtcGetPTXSize          = nullptr;
 pfn_nvrtcGetPTX              nvrtcGetPTX              = nullptr;
@@ -126,6 +128,8 @@ static int nvrtc_load(void) {
     if (!h) h = dlopen("libnvrtc.so", RTLD_NOW);
     if (!h) return -1;
     nvrtcCreateProgram     = (pfn_nvrtcCreateProgram)    dlsym(h, "nvrtcCreateProgram");
+    nvrtcAddNameExpression = (pfn_nvrtcAddNameExpression)dlsym(h, "nvrtcAddNameExpression");
+    nvrtcGetLoweredName    = (pfn_nvrtcGetLoweredName)   dlsym(h, "nvrtcGetLoweredName");
     nvrtcCompileProgram    = (pfn_nvrtcCompileProgram)   dlsym(h, "nvrtcCompileProgram");
     nvrtcGetPTXSize        = (pfn_nvrtcGetPTXSize)       dlsym(h, "nvrtcGetPTXSize");
     nvrtcGetPTX            = (pfn_nvrtcGetPTX)           dlsym(h, "nvrtcGetPTX");
@@ -161,6 +165,32 @@ static bool compileKernel(const std::string& src, const std::vector<std::string>
             std::cerr << "nvrtcCreateProgram failed: " << nvrtcErrorString(rc) << "\n";
             return false;
         }
+        // Register name expressions so nvrtcGetLoweredName can resolve the
+        // C++-mangled symbol names after compilation.  Without this,
+        // cuModuleGetFunction and cuModuleGetGlobal fail with NOT_FOUND
+        // because NVRTC mangles global and __constant__ names per the ABI.
+        // Kernels use their plain name (decays to the address); variables
+        // must use the address-of form (&d_cv, not d_cv), per the NVRTC
+        // example in the "Accessing Lowered Names" section of the guide.
+        if (nvrtcAddNameExpression) {
+            nvrtcResult r;
+            r = nvrtcAddNameExpression(g_prog, "search_nonce");
+            if (r != NVRTC_SUCCESS)
+                std::cerr << "nvrtcAddNameExpression(search_nonce) failed: "
+                          << nvrtcErrorString(r) << "\n";
+            r = nvrtcAddNameExpression(g_prog, "&d_cv");
+            if (r != NVRTC_SUCCESS)
+                std::cerr << "nvrtcAddNameExpression(&d_cv) failed: "
+                          << nvrtcErrorString(r) << "\n";
+            r = nvrtcAddNameExpression(g_prog, "&d_block2");
+            if (r != NVRTC_SUCCESS)
+                std::cerr << "nvrtcAddNameExpression(&d_block2) failed: "
+                          << nvrtcErrorString(r) << "\n";
+            r = nvrtcAddNameExpression(g_prog, "&d_target");
+            if (r != NVRTC_SUCCESS)
+                std::cerr << "nvrtcAddNameExpression(&d_target) failed: "
+                          << nvrtcErrorString(r) << "\n";
+        }
         rc = nvrtcCompileProgram(g_prog, 1, options);
         if (rc == NVRTC_SUCCESS) return true;
         std::string log = extractLog(g_prog);
@@ -173,6 +203,20 @@ static bool compileKernel(const std::string& src, const std::vector<std::string>
         }
     }
     return false;
+}
+
+// loweredName returns the C++-mangled symbol name for the given source-level
+// name expression.  NVRTC mangles global and __constant__ names per the ABI,
+// so cuModuleGetFunction / cuModuleGetGlobal require the lowered name.  Falls
+// back to the plain literal name when nvrtcGetLoweredName is unavailable.
+static const char* loweredName(const char* expr, const char* literal) {
+    if (nvrtcGetLoweredName && g_prog) {
+        const char* lowered = nullptr;
+        if (nvrtcGetLoweredName(g_prog, expr, &lowered) == NVRTC_SUCCESS && lowered) {
+            return lowered;
+        }
+    }
+    return literal;
 }
 
 static bool loadModuleFromPTX(void) {
@@ -192,22 +236,22 @@ static bool loadModuleFromPTX(void) {
         std::cerr << "cuModuleLoadDataEx failed: " << cudaErrorString(rc) << "\n";
         return false;
     }
-    rc = cuModuleGetFunction(&g_kernel, g_module, "search_nonce");
+    rc = cuModuleGetFunction(&g_kernel, g_module, loweredName("search_nonce", "search_nonce"));
     if (rc != CUDA_SUCCESS) {
         std::cerr << "cuModuleGetFunction failed: " << cudaErrorString(rc) << "\n";
         return false;
     }
-    rc = cuModuleGetGlobal(&g_cv, &g_cv_size, g_module, "d_cv");
+    rc = cuModuleGetGlobal(&g_cv, &g_cv_size, g_module, loweredName("&d_cv", "d_cv"));
     if (rc != CUDA_SUCCESS) {
         std::cerr << "cuModuleGetGlobal d_cv failed: " << cudaErrorString(rc) << "\n";
         return false;
     }
-    rc = cuModuleGetGlobal(&g_b2, &g_b2_size, g_module, "d_block2");
+    rc = cuModuleGetGlobal(&g_b2, &g_b2_size, g_module, loweredName("&d_block2", "d_block2"));
     if (rc != CUDA_SUCCESS) {
         std::cerr << "cuModuleGetGlobal d_block2 failed: " << cudaErrorString(rc) << "\n";
         return false;
     }
-    rc = cuModuleGetGlobal(&g_tgt, &g_tgt_size, g_module, "d_target");
+    rc = cuModuleGetGlobal(&g_tgt, &g_tgt_size, g_module, loweredName("&d_target", "d_target"));
     if (rc != CUDA_SUCCESS) {
         std::cerr << "cuModuleGetGlobal d_target failed: " << cudaErrorString(rc) << "\n";
         return false;
