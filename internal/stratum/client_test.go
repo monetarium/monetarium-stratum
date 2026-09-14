@@ -3,6 +3,7 @@ package stratum
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -102,6 +103,7 @@ func newTestClient(server *Server) *Client {
 	serverConn, clientConn := net.Pipe()
 	client := newClient(server, serverConn)
 	client.worker = "miner"
+	server.addClient(client)
 	_ = clientConn
 	return client
 }
@@ -136,6 +138,17 @@ func readResponse(t *testing.T, client *Client) (result interface{}, err *Stratu
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for response")
 		return nil, nil
+	}
+}
+
+// drainSends reads and discards pending messages from the client sends channel,
+// such as the work refresh notification enqueued after a throttled block.
+func drainSends(t *testing.T, client *Client) {
+	t.Helper()
+	select {
+	case <-client.sends:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for client sends")
 	}
 }
 
@@ -230,6 +243,9 @@ func TestSubmitBlockThrottle(t *testing.T) {
 	if submitter.count() != 0 {
 		t.Fatalf("first block must be throttled, submitter called %d times", submitter.count())
 	}
+	// The throttle enqueues a work refresh notification; drain it so the next
+	// readResponse resolves the second submit's response.
+	drainSends(t, client)
 
 	// Second found block must be submitted.
 	client.handleSubmit(req)
@@ -244,6 +260,69 @@ func TestSubmitBlockThrottle(t *testing.T) {
 	if found != 2 || submitted != 1 || throttled != 1 {
 		t.Fatalf("throttle stats got found=%d submitted=%d throttled=%d",
 			found, submitted, throttled)
+	}
+}
+
+// TestSubmitBlockThrottleRefreshesWork verifies that a throttled block kicks
+// all miners with a fresh timestamp-rolled job so the GPU is not left idle
+// waiting for a node template that will never arrive (the throttled block
+// never reaches the node).
+func TestSubmitBlockThrottleRefreshesWork(t *testing.T) {
+	submitter := &fakeSubmitter{accepted: true}
+	server := newTestServer(t, 2, mining.SubmitBlock, submitter)
+	server.workMgr.SetCurrent(makeWorkBlob(t), mining.ReasonNewTxns)
+
+	client := newTestClient(server)
+	req := submitRequest(1, []string{"miner", "1", "0102030405060708", "78563412", "ffeeddcc"})
+
+	client.handleSubmit(req)
+	if result, err := readResponse(t, client); err != nil || result != true {
+		t.Fatalf("throttled block: expected accepted result, got %v %+v", result, err)
+	}
+	if submitter.count() != 0 {
+		t.Fatalf("first block must be throttled, submitter called %d times", submitter.count())
+	}
+
+	// A refreshed mining.notify must follow the response: a new job id, the
+	// same height, an advanced timestamp and no clean flag.
+	select {
+	case raw := <-client.sends:
+		var ntfn Notification
+		if err := json.Unmarshal(bytes.TrimSpace(raw), &ntfn); err != nil {
+			t.Fatalf("unable to parse notify %s: %v", raw, err)
+		}
+		if ntfn.Method != Notify {
+			t.Fatalf("expected mining.notify, got %q", ntfn.Method)
+		}
+		if len(ntfn.Params) != 9 {
+			t.Fatalf("notify params got %d want 9", len(ntfn.Params))
+		}
+		jobID, _ := ntfn.Params[0].(string)
+		if jobID != "2" {
+			t.Fatalf("refreshed work job id got %q want 2", jobID)
+		}
+		if clean, _ := ntfn.Params[8].(bool); clean {
+			t.Fatal("throttled refresh must not mark previous jobs clean")
+		}
+		ntime, _ := ntfn.Params[7].(string)
+		ts, err := hex.DecodeString(ntime)
+		if err != nil || len(ts) != 4 {
+			t.Fatalf("invalid refreshed timestamp %q: %v", ntime, err)
+		}
+		if got := binary.LittleEndian.Uint32(ts); got <= 1600000000 {
+			t.Fatalf("refreshed timestamp %d must advance past %d", got, 1600000000)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for throttled work refresh")
+	}
+
+	// The refreshed job is now the current work.
+	curr := server.workMgr.Current()
+	if curr == nil {
+		t.Fatal("current work is nil after throttled refresh")
+	}
+	if curr.JobID() != "2" {
+		t.Fatalf("current work job id got %q want refreshed job 2", curr.JobID())
 	}
 }
 

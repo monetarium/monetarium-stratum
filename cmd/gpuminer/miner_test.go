@@ -442,6 +442,58 @@ func TestMineJobSubmitsSolution(t *testing.T) {
 	<-done
 }
 
+// TestMineJobContinuesAfterBlock verifies that a block solution does not stop
+// the job: the miner logs and submits the block, then keeps mining by rolling
+// to the next extraNonce2 instead of idling until new work arrives.  When the
+// pool throttles the block, no mining.notify follows, so stopping would stall
+// the GPU until the next network block.
+func TestMineJobContinuesAfterBlock(t *testing.T) {
+	maxTarget := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	miner := newTestMiner(t)
+	host, reader := fakeHost(t)
+	miner.host = host
+
+	job := &Job{
+		jobID:         "7",
+		height:        1,
+		shareTargetBE: toTargetBytes(maxTarget),
+		blockTargetBE: toTargetBytes(maxTarget),
+	}
+	copy(job.header[versionOffset:versionOffset+4], []byte{1, 0, 0, 0})
+	copy(job.header[prevBlockOffset:prevBlockOffset+32], make([]byte, 32))
+	copy(job.header[partialHeaderOffset:], make([]byte, genTx1Len))
+	copy(job.ntime[:], []byte{0x78, 0x56, 0x34, 0x12})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		miner.mineJob(ctx, job, 0)
+	}()
+
+	// Consume the first work message, then feed a block-classified solution.
+	_ = readWork(t, reader)
+	host.solutions <- solutionMessage{Nonce: 42, NoncesChecked: 64}
+
+	// The miner must not stall: it rolls to the next extraNonce2 and sends a
+	// fresh sweep for the same job.  Reading the work proves onSolution has
+	// already run, so the block counter is settled by then.
+	w := readWork(t, reader)
+	hdr, err := hex.DecodeString(w.Header)
+	if err != nil || len(hdr) != headerLen {
+		t.Fatalf("bad header: %v len=%d", err, len(hdr))
+	}
+	if got := binary.LittleEndian.Uint64(hdr[extraNonce2Offset:]); got != 1 {
+		t.Fatalf("post-block extraNonce2 got %d want 1", got)
+	}
+	if got := miner.blocks.Load(); got != 1 {
+		t.Fatalf("blocks got %d want 1", got)
+	}
+
+	cancel()
+	<-done
+}
+
 // TestHashTargetMatchesPool verifies that converting the blake3 output the way
 // the miner does produces the same target the pool computes.
 func TestHashTargetMatchesPool(t *testing.T) {

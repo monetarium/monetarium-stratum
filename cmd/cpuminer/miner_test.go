@@ -348,7 +348,7 @@ func TestMineJobFindsShare(t *testing.T) {
 }
 
 // TestMineJobAbortsOnGenerationChange verifies that a thread stops hashing when
-// the job generation changes (new work or a block found elsewhere).
+// the job generation changes (new work arrives).
 func TestMineJobAbortsOnGenerationChange(t *testing.T) {
 	miner := newTestMiner(t)
 	job := &Job{
@@ -375,6 +375,68 @@ func TestMineJobAbortsOnGenerationChange(t *testing.T) {
 		t.Fatal("miner did not abort on generation change")
 	}
 	cancel()
+}
+
+// TestMineJobContinuesAfterBlock verifies that a block solution does not stop
+// the job: the thread logs and submits the block, then keeps hashing the same
+// template instead of idling until new work arrives.  When the pool throttles
+// the block, no mining.notify follows, so stopping would stall every thread
+// until the next network block.
+func TestMineJobContinuesAfterBlock(t *testing.T) {
+	miner := newTestMiner(t)
+
+	type submission struct {
+		extraNonce2 [8]byte
+		nonce       uint32
+	}
+	submitted := make(chan submission, 8)
+	miner.onSubmit = func(job *Job, extraNonce2 []byte, nonce uint32) {
+		var en2 [8]byte
+		copy(en2[:], extraNonce2)
+		select {
+		case submitted <- submission{en2, nonce}:
+		default:
+		}
+	}
+
+	// A target covering the entire hash space makes every hash a block
+	// solution, so the first and every subsequent nonce must be submitted.
+	fullTarget := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	job := &Job{
+		jobID:         "9",
+		height:        1,
+		shareTargetBE: toTargetBytes(fullTarget),
+		blockTargetBE: toTargetBytes(fullTarget),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		miner.mineJob(ctx, job, 0, 2)
+	}()
+
+	// The first hit is a block solution; a second submission proves the thread
+	// kept hashing after it instead of stopping on the block.
+	for i := 0; i < 2; i++ {
+		select {
+		case s := <-submitted:
+			if binary.LittleEndian.Uint64(s.extraNonce2[:]) != 2 {
+				t.Fatalf("extraNonce2 base got %d want 2", binary.LittleEndian.Uint64(s.extraNonce2[:]))
+			}
+			if s.nonce != uint32(i) {
+				t.Fatalf("nonce %d got %d want %d", i, s.nonce, i)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no submission %d received after a block solution", i)
+		}
+	}
+	if got := miner.blocks.Load(); got < 2 {
+		t.Fatalf("blocks got %d want at least 2", got)
+	}
+
+	cancel()
+	<-done
 }
 
 // TestHashTargetMatchesPool verifies that converting the blake3 output the way

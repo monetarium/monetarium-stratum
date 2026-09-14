@@ -128,6 +128,16 @@ func (w *Work) Data() []byte {
 	return data
 }
 
+// RefreshTimestamp returns a copy of the work data with the header timestamp
+// advanced to ts.  It is used by the pool to serve a fresh job at the same
+// height when a throttled block leaves the node template unchanged, so miners
+// are not left waiting for a work notification that will never come.
+func (w *Work) RefreshTimestamp(ts uint32) []byte {
+	data := w.Data()
+	u32LEPut(data[timestampSlice.start:timestampSlice.end], ts)
+	return data
+}
+
 // BuildSolvedHeader applies the miner submission fields (extra nonce 1, extra
 // nonce 2, timestamp and nonce) to the getwork data blob and parses the result
 // into a block header.
@@ -184,4 +194,11 @@ func (w *Work) SolvedHeaderData(extraNonce1 []byte, extraNonce2 []byte,
 
 func u32LE(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
+func u32LEPut(b []byte, v uint32) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
 }

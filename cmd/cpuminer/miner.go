@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"sync/atomic"
 	"time"
 
 	"github.com/monetarium/monetarium-node/blockchain/standalone"
@@ -41,7 +40,6 @@ type Job struct {
 	ntime         [4]byte
 	shareTargetBE [32]byte
 	blockTargetBE [32]byte
-	solved        atomic.Bool
 }
 
 // buildJob reconstructs the serialized block header from the mining.notify
@@ -141,10 +139,6 @@ func (m *Miner) hashWorker(ctx context.Context, idx int) {
 			m.waitForJob(ctx)
 			continue
 		}
-		if job.solved.Load() {
-			m.waitForJob(ctx)
-			continue
-		}
 		gen := m.gen.Load()
 		m.mineJob(ctx, job, gen, idx)
 	}
@@ -161,8 +155,8 @@ func (m *Miner) waitForJob(ctx context.Context) {
 // mineJob searches the header nonce and extraNonce2 spaces for solutions to the
 // given job.  The thread owns a residue class of the extraNonce2 space so that
 // concurrent threads never hash the same (extraNonce2, nonce) pair.  It returns
-// when the job generation changes (new work or a block found elsewhere) or the
-// job has been solved.
+// when the job generation changes (new work arrives) or the connection is torn
+// down.
 func (m *Miner) mineJob(ctx context.Context, job *Job, gen uint64, idx int) {
 	var header [headerLen]byte
 	copy(header[:], job.header[:])
@@ -173,7 +167,7 @@ func (m *Miner) mineJob(ctx context.Context, job *Job, gen uint64, idx int) {
 
 	nonce := uint32(0)
 	for {
-		if ctx.Err() != nil || m.gen.Load() != gen || job.solved.Load() {
+		if ctx.Err() != nil || m.gen.Load() != gen {
 			return
 		}
 
@@ -185,17 +179,17 @@ func (m *Miner) mineJob(ctx context.Context, job *Job, gen uint64, idx int) {
 
 		if isShare, isBlock := classifySolution(sum, &job.shareTargetBE,
 			&job.blockTargetBE); isShare {
+			// A block solution is logged and submitted but does NOT stop the
+			// job: the template is still valid until new work arrives.  Stopping
+			// would idle the threads when the pool throttles the block, since it
+			// never reaches the node and no refreshing mining.notify is
+			// generated.  New work supersedes the job regardless.
 			if isBlock {
 				m.blocks.Add(1)
-				m.gen.Add(1)
-				job.solved.Store(true)
 				m.log.Infof("block solution found: job=%s height=%d hash=%s",
 					job.jobID, job.height, chainhash.Hash(sum))
 			}
 			m.onSubmit(job, extraNonce2[:], nonce)
-			if isBlock {
-				return
-			}
 		}
 
 		nonce++

@@ -222,13 +222,16 @@ func (c *Client) handleSubmit(req *Request) {
 	atomic.AddInt64(&c.submissions, 1)
 
 	// Found a block.  The throttle may discard it to keep the pool from
-	// dominating the network.
+	// dominating the network.  The discarded block never reaches the node, so
+	// no new template is generated; refresh the work so miners have fresh
+	// nonce space instead of stalling until the next network block.
 	if !c.server.throttle.Allow() {
 		c.server.recordShare(c)
 		found, submitted, throttled := c.server.throttle.Stats()
 		c.log.Infof("block found but throttled: skipped submission (%d found, "+
 			"%d submitted, %d throttled)", found, submitted, throttled)
 		c.sendResult(req.ID, true)
+		c.server.RefreshWork()
 		return
 	}
 

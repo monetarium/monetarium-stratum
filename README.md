@@ -207,7 +207,12 @@ effective submitted hashrate is a sane fraction:
 
 Solved blocks that the throttle discards are logged and counted; they are
 simply never submitted to the node, so they never reach the network. The
-counters are shown in the periodic stats log line.
+counters are shown in the periodic stats log line.  Because a throttled block
+never reaches the node, no new work arrives for the pool to distribute.  To
+prevent miners from stalling, the pool automatically rolls the template
+timestamp and broadcasts fresh work after each throttled block, so the miners
+continue mining the same height and prevhash with a new nonce space until the
+next network block triggers a clean job.
 
 ## Deployment
 

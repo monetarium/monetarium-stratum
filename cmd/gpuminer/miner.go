@@ -88,7 +88,6 @@ type Job struct {
 	ntime         [4]byte
 	shareTargetBE [32]byte
 	blockTargetBE [32]byte
-	solved        atomic.Bool
 }
 
 // buildJob reconstructs the serialized block header from the mining.notify
@@ -597,10 +596,6 @@ func (m *Miner) hashWorker(ctx context.Context) {
 			m.waitForJob(ctx)
 			continue
 		}
-		if job.solved.Load() {
-			m.waitForJob(ctx)
-			continue
-		}
 		gen := m.gen.Load()
 		m.mineJob(ctx, job, gen)
 	}
@@ -617,14 +612,14 @@ func (m *Miner) waitForJob(ctx context.Context) {
 // mineJob drives the GPU host to search the current job.  The GPU searches the
 // 2^32 nonce space for one header; when a sweep completes without a solution
 // the extraNonce2 is rolled and the same header is re-submitted, giving a fresh
-// disjoint nonce space.  It returns when the job generation changes (new work)
-// or the job has been solved.
+// disjoint nonce space.  It returns when the job generation changes (new work
+// arrives) or the connection is torn down.
 func (m *Miner) mineJob(ctx context.Context, job *Job, gen uint64) {
 	extraNonce2 := uint64(0)
 	var lastNonces uint64
 
 	for {
-		if ctx.Err() != nil || m.gen.Load() != gen || job.solved.Load() {
+		if ctx.Err() != nil || m.gen.Load() != gen {
 			return
 		}
 
@@ -670,7 +665,11 @@ func (m *Miner) mineJob(ctx context.Context, job *Job, gen uint64) {
 }
 
 // onSolution classifies a found solution and submits it if it meets the share
-// target.
+// target.  A block solution is logged and submitted but does NOT stop the job:
+// the miner continues rolling extraNonce2 on the current template, which is
+// still valid until new work arrives.  Stopping would idle the GPU when the
+// pool throttles the block (it never reaches the node, so no refreshing
+// mining.notify is generated).  New work supersedes the job regardless.
 func (m *Miner) onSolution(job *Job, extraNonce2 []byte, nonce uint32) {
 	// Rebuild the solved header to classify the hash against the targets.
 	var header [headerLen]byte
@@ -684,15 +683,10 @@ func (m *Miner) onSolution(job *Job, extraNonce2 []byte, nonce uint32) {
 		&job.blockTargetBE); isShare {
 		if isBlock {
 			m.blocks.Add(1)
-			m.gen.Add(1)
-			job.solved.Store(true)
 			m.log.Infof("block solution found: job=%s height=%d hash=%s",
 				job.jobID, job.height, chainhash.Hash(sum))
 		}
 		m.submitShare(job, extraNonce2, nonce)
-		if isBlock {
-			return
-		}
 	}
 }
 

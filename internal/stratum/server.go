@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/decred/slog"
 	"github.com/monetarium/monetarium-node/chaincfg"
@@ -170,6 +171,25 @@ func (s *Server) BroadcastWork() {
 	for _, c := range clients {
 		c.sendWork(work, false)
 	}
+}
+
+// RefreshWork rolls the current template timestamp forward and broadcasts it
+// as fresh work to every client.  The pool calls this after throttling a block
+// so that miners are not left idle: a throttled block never reaches the node,
+// so no new template arrives and miners that stop after a find would otherwise
+// wait for the next network block.
+func (s *Server) RefreshWork() {
+	work := s.workMgr.Current()
+	if work == nil {
+		return
+	}
+	now := uint32(time.Now().Unix())
+	old := binary.LittleEndian.Uint32(work.Timestamp())
+	if now <= old {
+		now = old + 1
+	}
+	s.workMgr.SetCurrent(work.RefreshTimestamp(now), mining.ReasonNewVotes)
+	s.BroadcastWork()
 }
 
 // ProcessWork receives new work from the node and broadcasts it.
