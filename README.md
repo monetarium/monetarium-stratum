@@ -150,6 +150,19 @@ make -C cmd/gpuminer        # builds both hosts (host, cuda_host) and gpuminer
   --user worker1 --password x --net mainnet
 ```
 
+### Testing the GPU backend without a GPU
+
+`cmd/gpuminer` ships a fake CUDA driver and fake NVRTC (`cuda/test/`) that
+execute the production host binary on the CPU, so the CUDA backend can be
+exercised in CI with no NVIDIA driver, CUDA toolkit, or NVRTC.  The fakes
+validate the real `dlsym`/`cuSym(_v2)`/launch path against a CPU reference
+implementation of the kernel, plus fault injection for error paths.
+
+```sh
+# C-level API tests (140 checks) + end-to-end Go integration tests
+make -C cmd/gpuminer test-cuda
+```
+
 The miner reports hashrate, accepted/rejected shares and found blocks every few
 seconds.
 

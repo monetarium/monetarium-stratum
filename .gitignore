@@ -3,5 +3,10 @@
 /cpuminer
 /cpuminer.exe
 /cmd/gpuminer/host
+/cmd/gpuminer/cuda_host
 /cmd/gpuminer/gpuminer
+/cmd/gpuminer/cuda/test/api_tests
+/cmd/gpuminer/cuda/test/libcuda.so*
+/cmd/gpuminer/cuda/test/libnvrtc.so*
+.atl/
 *.log
