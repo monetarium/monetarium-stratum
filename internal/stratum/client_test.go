@@ -226,7 +226,8 @@ func TestSubmitBlockDivisorOne(t *testing.T) {
 }
 
 // TestSubmitBlockThrottle verifies that with a divisor of 2, only every second
-// solved block is submitted to the node.
+// solved block is submitted to the node, with the first block always
+// submitted.
 func TestSubmitBlockThrottle(t *testing.T) {
 	submitter := &fakeSubmitter{accepted: true}
 	server := newTestServer(t, 2, mining.SubmitBlock, submitter)
@@ -235,26 +236,27 @@ func TestSubmitBlockThrottle(t *testing.T) {
 	client := newTestClient(server)
 	req := submitRequest(1, []string{"miner", "1", "0102030405060708", "78563412", "ffeeddcc"})
 
-	// First found block must be throttled but accepted to the miner.
+	// First found block must be submitted: the throttle anchors the first
+	// block after start so a fresh process never wastes its first find.
+	client.handleSubmit(req)
+	if result, err := readResponse(t, client); err != nil || result != true {
+		t.Fatalf("first block: expected accepted result, got %v %+v", result, err)
+	}
+	if submitter.count() != 1 {
+		t.Fatalf("first block must be submitted, got %d calls", submitter.count())
+	}
+
+	// Second found block must be throttled but accepted to the miner.
 	client.handleSubmit(req)
 	if result, err := readResponse(t, client); err != nil || result != true {
 		t.Fatalf("throttled block: expected accepted result, got %v %+v", result, err)
 	}
-	if submitter.count() != 0 {
-		t.Fatalf("first block must be throttled, submitter called %d times", submitter.count())
-	}
-	// The throttle enqueues a work refresh notification; drain it so the next
-	// readResponse resolves the second submit's response.
-	drainSends(t, client)
-
-	// Second found block must be submitted.
-	client.handleSubmit(req)
-	if result, err := readResponse(t, client); err != nil || result != true {
-		t.Fatalf("second block: expected accepted result, got %v %+v", result, err)
-	}
 	if submitter.count() != 1 {
-		t.Fatalf("second block must be submitted, got %d calls", submitter.count())
+		t.Fatalf("second block must be throttled, got %d calls", submitter.count())
 	}
+	// The throttle enqueues a work refresh notification; drain it so later
+	// reads resolve cleanly.
+	drainSends(t, client)
 
 	found, submitted, throttled := server.throttle.Stats()
 	if found != 2 || submitted != 1 || throttled != 1 {
@@ -266,7 +268,8 @@ func TestSubmitBlockThrottle(t *testing.T) {
 // TestSubmitBlockThrottleRefreshesWork verifies that a throttled block kicks
 // all miners with a fresh timestamp-rolled job so the GPU is not left idle
 // waiting for a node template that will never arrive (the throttled block
-// never reaches the node).
+// never reaches the node).  The first block is always submitted, so the
+// refresh is exercised by the second solved block.
 func TestSubmitBlockThrottleRefreshesWork(t *testing.T) {
 	submitter := &fakeSubmitter{accepted: true}
 	server := newTestServer(t, 2, mining.SubmitBlock, submitter)
@@ -275,16 +278,26 @@ func TestSubmitBlockThrottleRefreshesWork(t *testing.T) {
 	client := newTestClient(server)
 	req := submitRequest(1, []string{"miner", "1", "0102030405060708", "78563412", "ffeeddcc"})
 
+	// First block is always submitted, so no refresh notification follows.
+	client.handleSubmit(req)
+	if result, err := readResponse(t, client); err != nil || result != true {
+		t.Fatalf("first block: expected accepted result, got %v %+v", result, err)
+	}
+	if submitter.count() != 1 {
+		t.Fatalf("first block must be submitted, got %d calls", submitter.count())
+	}
+
+	// Second block is throttled; a refreshed mining.notify must follow the
+	// response: a new job id, the same height, an advanced timestamp and no
+	// clean flag.
 	client.handleSubmit(req)
 	if result, err := readResponse(t, client); err != nil || result != true {
 		t.Fatalf("throttled block: expected accepted result, got %v %+v", result, err)
 	}
-	if submitter.count() != 0 {
-		t.Fatalf("first block must be throttled, submitter called %d times", submitter.count())
+	if submitter.count() != 1 {
+		t.Fatalf("second block must be throttled, got %d calls", submitter.count())
 	}
 
-	// A refreshed mining.notify must follow the response: a new job id, the
-	// same height, an advanced timestamp and no clean flag.
 	select {
 	case raw := <-client.sends:
 		var ntfn Notification

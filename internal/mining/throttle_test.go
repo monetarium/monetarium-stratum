@@ -33,7 +33,8 @@ func TestBlockThrottleDivisorZero(t *testing.T) {
 }
 
 // TestBlockThrottleSubmitEveryN verifies that with a divisor of N, only 1 in
-// every N solved blocks is submitted, starting from the Nth block.
+// every N solved blocks is submitted, anchored so the first solved block is
+// always submitted.
 func TestBlockThrottleSubmitEveryN(t *testing.T) {
 	tests := []struct {
 		divisor    uint32
@@ -44,21 +45,21 @@ func TestBlockThrottleSubmitEveryN(t *testing.T) {
 		{
 			divisor:    2,
 			iterations: 6,
-			// found blocks 2, 4, 6 are submitted (1 in 2).
-			wantSubmissions: []bool{false, true, false, true, false, true},
+			// found blocks 1, 3, 5 are submitted (1 in 2, first block always).
+			wantSubmissions: []bool{true, false, true, false, true, false},
 		},
 		{
 			divisor:    3,
 			iterations: 9,
-			// found blocks 3, 6, 9 are submitted (1 in 3).
-			wantSubmissions: []bool{false, false, true, false, false, true, false, false, true},
+			// found blocks 1, 4, 7 are submitted (1 in 3, first block always).
+			wantSubmissions: []bool{true, false, false, true, false, false, true, false, false},
 		},
 		{
 			divisor:    10,
 			iterations: 20,
-			// found blocks 10, 20 are submitted (1 in 10).
-			wantSubmissions: []bool{false, false, false, false, false, false, false, false,
-				false, true, false, false, false, false, false, false, false, false, false, true},
+			// found blocks 1, 11 are submitted (1 in 10, first block always).
+			wantSubmissions: []bool{true, false, false, false, false, false, false, false, false,
+				false, true, false, false, false, false, false, false, false, false, false},
 		},
 	}
 

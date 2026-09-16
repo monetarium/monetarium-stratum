@@ -7,9 +7,11 @@ import "sync"
 // share of blocks to discard some of the solved blocks found, thereby reducing
 // their effective submitted hashrate.
 //
-// Semantics: with a divisor of N, only 1 in every N solved blocks is submitted
-// to the node; the remaining N-1 are silently discarded and counted as
-// throttled.  A divisor of 1 disables throttling entirely.
+// Semantics: with a divisor of N, 1 in every N solved blocks is submitted to
+// the node; the remaining N-1 are silently discarded and counted as throttled.
+// The first solved block after the pool starts is always submitted, so a fresh
+// process never wastes its first find; throttling then applies to the
+// following finds.  A divisor of 1 disables throttling entirely.
 type BlockThrottle struct {
 	mu          sync.Mutex
 	divisor     uint32
@@ -36,12 +38,14 @@ func (t *BlockThrottle) Divisor() uint32 {
 
 // Allow is called for every solved block.  It reports whether the block should
 // be submitted to the network.  When it returns false, the block has been
-// discarded by the throttle.
+// discarded by the throttle.  The counter is anchored so the first solved
+// block is always submitted; submissions then occur for the (1+N)th, (1+2N)th,
+// ... solved blocks.
 func (t *BlockThrottle) Allow() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.foundBlocks++
-	if t.divisor <= 1 || t.foundBlocks%uint64(t.divisor) == 0 {
+	if t.divisor <= 1 || t.foundBlocks%uint64(t.divisor) == 1 {
 		t.submitted++
 		return true
 	}
