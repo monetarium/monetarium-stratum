@@ -3,11 +3,14 @@ package node
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/decred/slog"
+	"github.com/monetarium/monetarium-node/dcrjson"
 	"github.com/monetarium/monetarium-node/rpcclient"
 
 	"github.com/monetarium/monetarium-stratum/internal/mining"
@@ -31,6 +34,10 @@ type Config struct {
 	// Log is the package logger.
 	Log slog.Logger
 }
+
+// initialWorkRetryInterval is how long Connect waits between getwork attempts
+// while the node is syncing or has no peers.
+const initialWorkRetryInterval = 10 * time.Second
 
 // Client manages the connection to the monetarium-node RPC server and the
 // delivery of new work and block notifications to the pool.
@@ -119,17 +126,49 @@ func (c *Client) Connect() error {
 		return c.ctx.Err()
 	}
 
+	// Wait before registering for work notifications: nothing drains them
+	// until the pool's event loop starts, and a full queue would block the
+	// websocket reader and with it the getwork replies.
+	if err := waitForNode(c.ctx, c.log, c.GetWork, initialWorkRetryInterval); err != nil {
+		return err
+	}
+
 	if err := c.client.NotifyWork(c.ctx); err != nil {
 		return fmt.Errorf("unable to register for work notifications: %w", err)
 	}
 
-	// Fetch initial work to avoid waiting for a notification.
+	// Fetch initial work to avoid waiting for a notification.  Fetch it anew
+	// rather than reuse the reply that ended the wait: a template built
+	// before NotifyWork was registered would never be announced.
 	work, _, err := c.GetWork()
 	if err != nil {
 		return fmt.Errorf("unable to fetch initial work: %w", err)
 	}
 	c.handleWork(work, mining.ReasonNewTxns)
 	return nil
+}
+
+// waitForNode calls getWork until the node serves work.  A freshly installed
+// node has no peers or is still downloading blocks, and refuses getwork until
+// it catches up, so those errors are waited out; any other error is returned.
+func waitForNode(ctx context.Context, log slog.Logger, getWork func() ([]byte, []byte, error), interval time.Duration) error {
+	for {
+		_, _, err := getWork()
+		if err == nil {
+			return nil
+		}
+		var rpcErr *dcrjson.RPCError
+		if !errors.As(err, &rpcErr) || (rpcErr.Code != dcrjson.ErrRPCClientNotConnected &&
+			rpcErr.Code != dcrjson.ErrRPCClientInInitialDownload) {
+			return fmt.Errorf("unable to fetch initial work: %w", err)
+		}
+		log.Infof("waiting for the node to be ready (%v), retrying in %v", err, interval)
+		select {
+		case <-time.After(interval):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // GetWork fetches the current work directly from the node.

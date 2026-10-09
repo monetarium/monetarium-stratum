@@ -199,7 +199,9 @@ solution the pool submits to the node.
 
 The node serving the pool must have `generate` disabled (getwork refuses to
 serve work while the node mines itself), be synced to the current tip and have
-at least one peer.  Check with `monetarium-ctl`:
+at least one peer.  The pool can be started before the node has synced: it logs
+`waiting for the node to be ready` until the node serves work.  Check with
+`monetarium-ctl`:
 
 ```sh
 monetarium-ctl --configfile=~/.monetarium/monetarium.conf getgenerate
