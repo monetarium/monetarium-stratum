@@ -160,6 +160,16 @@ func (c *Client) handleSubmit(req *Request) {
 	worker, jobID, extraNonce2E, nTimeE, nonceE :=
 		params[0], params[1], params[2], params[3], params[4]
 
+	// Shares and solved blocks are only accepted from authorized workers.
+	// The worker-name comparison below is not sufficient on its own: a
+	// client that never sent mining.authorize has an empty worker name,
+	// so submitting with an empty worker would otherwise bypass the pool
+	// password entirely.
+	if !c.authorized {
+		c.sendError(req.ID, ErrCodeUnauthorized, "unauthorized worker")
+		return
+	}
+
 	if worker != c.worker {
 		c.sendError(req.ID, ErrCodeUnauthorized, "worker name mismatch")
 		return

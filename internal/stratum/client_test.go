@@ -103,6 +103,7 @@ func newTestClient(server *Server) *Client {
 	serverConn, clientConn := net.Pipe()
 	client := newClient(server, serverConn)
 	client.worker = "miner"
+	client.authorized = true // submit-path tests cover authorized clients; see TestSubmitUnauthorized
 	server.addClient(client)
 	_ = clientConn
 	return client
@@ -398,6 +399,29 @@ func TestSubmitWorkerMismatch(t *testing.T) {
 	}
 }
 
+func TestSubmitUnauthorized(t *testing.T) {
+	submitter := &fakeSubmitter{accepted: true}
+	server := newTestServer(t, 1, mining.SubmitBlock, submitter)
+	server.workMgr.SetCurrent(makeWorkBlob(t), mining.ReasonNewTxns)
+
+	// A client that never sent mining.authorize has an empty worker name,
+	// so submitting with an empty worker must not slip past the worker
+	// name comparison.
+	client := newTestClient(server)
+	client.authorized = false
+	client.worker = ""
+
+	req := submitRequest(1, []string{"", "1", "0102030405060708", "78563412", "ffeeddcc"})
+	client.handleSubmit(req)
+
+	if result, err := readResponse(t, client); err == nil || err.Code != ErrCodeUnauthorized {
+		t.Fatalf("expected unauthorized error, got result=%v err=%+v", result, err)
+	}
+	if submitter.count() != 0 {
+		t.Fatal("submitter must not be called for an unauthorized client")
+	}
+}
+
 func TestSubmitInvalidHex(t *testing.T) {
 	submitter := &fakeSubmitter{accepted: true}
 	server := newTestServer(t, 1, mining.SubmitBlock, submitter)
@@ -508,6 +532,7 @@ func TestAuthorize(t *testing.T) {
 	}, submitter)
 
 	client := newTestClient(server)
+	client.authorized = false // start unauthenticated; newTestClient pre-authorizes for submit-path tests
 
 	// Wrong password must be rejected.
 	bad := submitRequest(1, []string{"miner", "wrong"})
