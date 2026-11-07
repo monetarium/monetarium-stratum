@@ -58,6 +58,13 @@ func parseConfig() (*config, error) {
 		}
 	}
 
+	// ShareTarget divides the network pow limit by the share difficulty, so
+	// a zero value would panic the pool with a division by zero on the
+	// first submitted share instead of failing here at startup.
+	if cfg.ShareDifficulty == 0 {
+		return nil, fmt.Errorf("sharedifficulty must be positive")
+	}
+
 	return cfg, nil
 }
 
