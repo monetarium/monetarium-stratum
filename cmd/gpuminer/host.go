@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/decred/slog"
 )
@@ -50,6 +51,8 @@ type gpuHost struct {
 	progress  chan progressMessage
 	searched  chan searchedMessage
 	done      chan struct{}
+	closing   chan struct{}
+	closed    sync.Once
 }
 
 // startGpuHost launches the host binary and wires its output channels.
@@ -78,6 +81,7 @@ func startGpuHost(hostPath, kernelDir string, deviceIdx int, log slog.Logger) (*
 		progress:  make(chan progressMessage, 16),
 		searched:  make(chan searchedMessage, 1),
 		done:      make(chan struct{}),
+		closing:   make(chan struct{}),
 	}
 	go h.readLoop(stdout)
 	return h, nil
@@ -92,13 +96,34 @@ func (h *gpuHost) send(msg interface{}) error {
 
 // stop closes the host's stdin and waits for it to exit.
 func (h *gpuHost) stop() {
+	// Signal the reader goroutine first: it may be blocked handing a
+	// solution to a miner that has already stopped reading, and without
+	// this it never reaches its own exit, so h.done never closes and
+	// shutdown hangs.
+	h.closed.Do(func() { close(h.closing) })
+
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	var stdin io.WriteCloser
 	if h.stdin != nil {
-		h.stdin.Close()
+		stdin = h.stdin
 		h.stdin = nil
 	}
-	h.cmd.Wait()
+	h.mu.Unlock()
+	if stdin != nil {
+		stdin.Close()
+	}
+
+	waited := make(chan struct{})
+	go func() {
+		h.cmd.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		h.cmd.Process.Kill()
+		<-waited
+	}
 	<-h.done
 }
 
@@ -126,7 +151,11 @@ func (h *gpuHost) readLoop(stdout io.Reader) {
 			if err := json.Unmarshal([]byte(line), &msg); err != nil {
 				continue
 			}
-			h.solutions <- msg
+			select {
+			case h.solutions <- msg:
+			case <-h.closing:
+				return
+			}
 		case "progress":
 			var msg progressMessage
 			if err := json.Unmarshal([]byte(line), &msg); err != nil {
@@ -141,7 +170,11 @@ func (h *gpuHost) readLoop(stdout io.Reader) {
 			if err := json.Unmarshal([]byte(line), &msg); err != nil {
 				continue
 			}
-			h.searched <- msg
+			select {
+			case h.searched <- msg:
+			case <-h.closing:
+				return
+			}
 		}
 	}
 }
