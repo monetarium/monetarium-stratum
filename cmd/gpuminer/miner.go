@@ -485,8 +485,13 @@ func (m *Miner) handleNotification(msg *message) {
 	switch msg.Method {
 	case ntfnDifficulty:
 		var diff float64
-		if len(msg.Params) > 0 {
-			_ = json.Unmarshal(msg.Params[0], &diff)
+		if len(msg.Params) == 0 {
+			m.log.Warnf("set_difficulty with no params; keeping the current target")
+			return
+		}
+		if err := json.Unmarshal(msg.Params[0], &diff); err != nil {
+			m.log.Warnf("invalid set_difficulty params; keeping the current target: %v", err)
+			return
 		}
 		m.setDifficulty(diff)
 	case ntfnNotify:
@@ -508,7 +513,15 @@ func (m *Miner) handleResponse(msg *message) {
 }
 
 // setDifficulty stores the share target derived from the difficulty.
+// Non-positive values are ignored rather than applied: dividing the pow
+// limit by zero would panic, and a negative difficulty converted to uint64
+// would wrap to a huge divisor, leaving a target no hash can ever meet and
+// silently stopping share finds.
 func (m *Miner) setDifficulty(diff float64) {
+	if !(diff > 0) {
+		m.log.Warnf("ignoring non-positive difficulty %v", diff)
+		return
+	}
 	target := new(big.Int).Div(new(big.Int).Set(m.cfg.Net.PowLimit),
 		new(big.Int).SetUint64(uint64(diff)))
 	if target.Cmp(m.cfg.Net.PowLimit) > 0 {
