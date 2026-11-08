@@ -8,12 +8,19 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/decred/slog"
 	"github.com/monetarium/monetarium-node/blockchain/standalone"
 
 	"github.com/monetarium/monetarium-stratum/internal/mining"
 )
+
+// writeTimeout bounds a single write to a client connection.  A miner that
+// stops reading its socket must not hold back work delivery to every other
+// miner: the write fails when the deadline passes and the client is
+// disconnected instead.
+const writeTimeout = 30 * time.Second
 
 // Client represents a connected miner.
 type Client struct {
@@ -74,9 +81,14 @@ func (c *Client) readLoop() {
 
 func (c *Client) writeLoop() {
 	defer c.wg.Done()
+	// A failed or timed-out write is unrecoverable for this client: close it
+	// so its connection and queue are released instead of pinning a read
+	// loop and a full send queue until the peer disconnects on its own.
+	defer c.close()
 	for {
 		select {
 		case msg := <-c.sends:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if _, err := c.conn.Write(msg); err != nil {
 				c.log.Debugf("client %d write error: %v", c.id, err)
 				return
@@ -289,6 +301,10 @@ func (c *Client) sendNotification(ntfn *Notification) {
 	c.enqueue(ntfn)
 }
 
+// enqueue marshals and queues a message for the write loop.  The caller is
+// the pool's work delivery loop, so it must never block on one client: when
+// the queue is full the client is not keeping up and is disconnected rather
+// than stalling work delivery to every other miner.
 func (c *Client) enqueue(msg interface{}) {
 	raw, err := marshalMessage(msg)
 	if err != nil {
@@ -298,6 +314,9 @@ func (c *Client) enqueue(msg interface{}) {
 	select {
 	case c.sends <- raw:
 	case <-c.quit:
+	default:
+		c.log.Warnf("client %d send queue full, disconnecting slow client", c.id)
+		c.close()
 	}
 }
 
